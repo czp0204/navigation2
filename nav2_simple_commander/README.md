@@ -8,6 +8,107 @@ This was built by [Steve Macenski](https://www.linkedin.com/in/steve-macenski-41
 
 ![](media/readme.gif)
 
+## 设计模式
+
+Nav2 Simple Commander 采用以下设计模式：
+
+1. **外观模式 (Facade Pattern)**：提供一个简化的高级接口，隐藏了与 ROS2 Action Server 和服务交互的复杂性
+2. **命令模式 (Command Pattern)**：将导航请求封装为命令对象，可以轻松管理和取消
+3. **观察者模式 (Observer Pattern)**：使用回调函数监控导航任务的执行状态和反馈
+4. **适配器模式 (Adapter Pattern)**：将 Nav2 的底层操作转换为易于使用的 Python API
+
+## 代码框架
+
+核心框架由以下主要组件构成：
+
+### 1. BasicNavigator 类 (robot_navigator.py)
+- 核心导航接口实现
+- 封装了所有与 Nav2 交互的操作
+- 提供高级导航函数和辅助工具
+
+### 2. 辅助类
+- **line_iterator.py**：实现线性路径迭代算法
+- **costmap_2d.py**：提供对代价地图的访问和操作
+- **footprint_collision_checker.py**：实现碰撞检查功能
+
+### 3. 示例和演示
+- **example_*.py**：展示 API 基本用法的示例
+- **demo_*.py**：展示完整应用场景的演示
+
+## 实现原理
+
+### 1. 导航流程
+BasicNavigator 类实现了以下主要导航功能：
+
+1. **目标点导航 (goToPose)**：
+   ```python
+   def goToPose(self, pose, behavior_tree=''):
+       # 等待导航动作服务器
+       # 发送导航目标请求
+       # 处理响应并返回结果
+   ```
+
+2. **路径点导航 (goThroughPoses)**：
+   ```python
+   def goThroughPoses(self, poses, behavior_tree=''):
+       # 顺序导航通过多个位置
+       # 处理整个路径规划
+   ```
+
+3. **路径跟随 (followPath)**：
+   ```python
+   def followPath(self, path, controller_id='', goal_checker_id=''):
+       # 直接跟随给定的路径
+       # 可指定控制器和目标检查器
+   ```
+
+### 2. 交互机制
+
+1. **与 Nav2 生命周期管理**：
+   - 自动等待导航系统就绪
+   - 提供生命周期管理函数
+
+   ```python
+   def waitUntilNav2Active(self, navigator='bt_navigator', localizer='amcl'):
+       # 等待导航系统激活
+   ```
+
+2. **任务管理**：
+   - 支持任务取消和状态检查
+   - 提供反馈和结果获取
+
+   ```python
+   def isTaskComplete(self):
+       # 检查任务是否完成
+   ```
+
+3. **地图和代价地图交互**：
+   - 地图切换和代价地图操作
+   - 代价地图数据获取
+
+### 3. 辅助功能
+
+1. **路径平滑**：
+   ```python
+   def smoothPath(self, path, smoother_id='', max_duration=2.0, check_for_collision=False):
+       # 使用服务器平滑路径
+   ```
+
+2. **碰撞检查**：
+   - 利用 footprint_collision_checker 进行路径验证
+   - 支持自定义机器人轮廓
+
+## 使用场景
+
+Nav2 Simple Commander 适用于以下应用场景：
+
+1. **机器人应用开发**：快速开发导航应用，无需深入了解 ROS2 和 Nav2 细节
+2. **自主移动机器人原型设计**：快速验证导航逻辑和行为
+3. **教育和研究**：学习和研究导航算法和行为
+4. **系统集成**：将导航功能集成到更大的系统中
+
+通过这些设计和实现，Nav2 Simple Commander 使开发者能够以简洁的方式利用 Nav2 的全部功能构建复杂的机器人导航应用。
+
 ## API
 
 See its [API Guide Page](https://navigation.ros.org/commander_api/index.html) for additional parameter descriptions.

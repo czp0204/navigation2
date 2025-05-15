@@ -1,5 +1,158 @@
 # Nav2 Regulated Pure Pursuit Controller
 
+## 设计模式
+
+Nav2 Regulated Pure Pursuit Controller 采用以下设计模式：
+
+1. **策略模式**：实现 nav2_core::Controller 接口，提供特定的路径跟踪策略
+2. **参数化模式**：通过可配置参数调整控制器行为，适应不同场景
+3. **装饰器模式**：在基础 Pure Pursuit 算法上添加额外的速度调节功能
+4. **生命周期模式**：遵循 ROS2 的生命周期管理模式
+
+## 代码框架
+
+### 核心类
+
+- **RegulatedPurePursuitController**：主要控制器类，实现 nav2_core::Controller 接口
+  - 提供路径跟踪功能
+  - 管理速度调节和碰撞检测
+  - 处理坐标变换和路径处理
+
+### 主要组件
+
+1. **路径追踪**：
+   - 选择前视点计算
+   - 曲率和速度计算
+   - 路径跟踪控制
+
+2. **速度调节**：
+   - 基于曲率的速度调节
+   - 基于代价地图的速度调节
+   - 接近目标时的速度调节
+
+3. **碰撞检测**：
+   - 前向模拟碰撞检测
+   - 动态避障功能
+
+## 实现原理
+
+### 1. Pure Pursuit 基本原理
+
+Pure Pursuit 算法通过以下步骤实现路径跟踪：
+
+```cpp
+geometry_msgs::msg::PoseStamped RegulatedPurePursuitController::getLookAheadPoint(
+  const double & lookahead_dist,
+  const nav_msgs::msg::Path & transformed_plan)
+{
+  // 在路径上查找距离当前位置前方 lookahead_dist 距离的点
+  // 计算该点与机器人的位置关系
+  // 返回前视点位置
+}
+
+// 计算跟踪该前视点所需的线速度和角速度
+void computeVelocityCommands()
+{
+  // 获取前视点
+  auto carrot_pose = getLookAheadPoint(lookahead_dist, transformed_plan);
+  
+  // 计算到前视点的角度和距离
+  double linear_vel = desired_linear_vel_;
+  double angular_vel = 2.0 * sin(carrot_rel_angle) / lookahead_dist;
+  
+  // 应用各种调节
+  // ...
+  
+  return cmd_vel;
+}
+```
+
+### 2. 速度调节机制
+
+Regulated Pure Pursuit 的核心创新在于其速度调节机制：
+
+1. **曲率调节**：
+
+```cpp
+void applyConstraints(
+  const double & curvature, const double & speed,
+  const double & pose_cost, const nav_msgs::msg::Path & path,
+  double & linear_vel, double & sign)
+{
+  // 根据曲率调整线速度
+  double curvature_vel = linear_vel;
+  if (use_regulated_linear_velocity_scaling_) {
+    curvature_vel = 
+      regulated_linear_scaling_min_speed_ + 
+      (desired_linear_vel_ - regulated_linear_scaling_min_speed_) * 
+      (regulated_linear_scaling_min_radius_ / std::abs(curvature));
+  }
+  
+  // 根据障碍物接近程度调整线速度
+  double cost_vel = linear_vel;
+  if (use_cost_regulated_linear_velocity_scaling_ && pose_cost != 0.0) {
+    cost_vel = 
+      desired_linear_vel_ * 
+      cost_scaling_gain_ * 
+      (cost_scaling_dist_ - pose_cost) / cost_scaling_dist_;
+  }
+  
+  // 选择最小速度作为最终速度
+  linear_vel = std::min(std::min(cost_vel, curvature_vel), linear_vel);
+}
+```
+
+2. **接近目标调节**：
+
+```cpp
+double approachVelocityScalingFactor(const nav_msgs::msg::Path & path)
+{
+  // 如果接近目标，根据距离逐渐降低速度
+  // 确保机器人平稳到达目标点
+}
+```
+
+### 3. 碰撞检测
+
+```cpp
+bool isCollisionImminent(
+  const geometry_msgs::msg::PoseStamped & robot_pose,
+  const double & linear_vel, const double & angular_vel,
+  const double & carrot_dist)
+{
+  // 基于当前速度预测轨迹
+  // 检查轨迹上是否有碰撞
+  // 如果有碰撞风险，返回 true
+}
+```
+
+### 4. 旋转到路径朝向
+
+```cpp
+bool shouldRotateToPath(
+  const geometry_msgs::msg::PoseStamped & carrot_pose, 
+  double & angle_to_path)
+{
+  // 判断是否需要先旋转到路径朝向
+  // 如果路径起始方向与机器人朝向差异较大，返回 true
+}
+
+void rotateToHeading(
+  double & linear_vel, double & angular_vel,
+  const double & angle_to_path, const geometry_msgs::msg::Twist & curr_speed)
+{
+  // 实现平滑旋转到路径朝向的功能
+  // 调整线速度和角速度
+}
+```
+
+## 主要特性与优势
+
+1. **改进的跟踪稳定性**：通过速度调节机制，提高了在高曲率路径上的跟踪稳定性
+2. **碰撞避免**：主动碰撞检测机制使机器人能够安全导航
+3. **适应性强**：可配置参数允许在不同场景和机器人平台上使用
+4. **高效计算**：优化的实现可在现代处理器上以超过 1kHz 的频率运行
+
 This is a controller (local trajectory planner) that implements a variant on the pure pursuit algorithm to track a path. This variant we call the Regulated Pure Pursuit Algorithm, due to its additional regulation terms on collision and linear speed. It also implements the basics behind the Adaptive Pure Pursuit algorithm to vary lookahead distances by current speed. It was developed by [Shrijit Singh](https://www.linkedin.com/in/shrijitsingh99/) and [Steve Macenski](https://www.linkedin.com/in/steve-macenski-41a985101/) while at [Samsung Research](https://www.sra.samsung.com/) as part of the Nav2 working group.
 
 Code based on a simplified version of this controller is referenced in the [Writing a New Nav2 Controller](https://navigation.ros.org/plugin_tutorials/docs/writing_new_nav2controller_plugin.html) tutorial.

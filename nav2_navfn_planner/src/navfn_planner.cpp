@@ -25,12 +25,14 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
+#include <rclcpp/rclcpp.hpp>
 
 #include "builtin_interfaces/msg/duration.hpp"
 #include "nav2_navfn_planner/navfn.hpp"

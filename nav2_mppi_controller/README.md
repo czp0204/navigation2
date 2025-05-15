@@ -321,3 +321,260 @@ Thus, care should be taken to select weights of the obstacle critic in conjuncti
 As you increase or decrease your weights on the Obstacle, you may notice the aforementioned behaviors (e.g. won't overcome free to non-free threshold). To overcome them, increase the FollowPath critic cost to increase the desire for the trajectory planner to continue moving towards the goal. Make sure to not overshoot this though, keep them balanced. A desirable outcome is smooth motion roughly in the center of spaces without significant close interactions with obstacles. It shouldn't be perfectly following a path yet nor should the output velocity be wobbling jaggedly.
 
 Once you have your obstacle avoidance behavior tuned and matched with an appropriate path following penalty, tune the Path Align critic to align with the path. If you design exact-path-alignment behavior, its possible to skip the obstacle critic step as highly tuning the system to follow the path will give it less ability to deviate to avoid obstacles (though it'll slow and stop). Tuning the critic weight for the Obstacle critic high will do the job to avoid near-collisions but the repulsion weight is largely unnecessary to you. For others wanting more dynamic behavior, it _can_ be beneficial to slowly lower the weight on the obstacle critic to give the path alignment critic some more room to work. If your path was generated with a cost-aware planner (like all provided by Nav2) and providing paths sufficiently far from obstacles for your satisfaction, the impact of a slightly reduced Obstacle critic with a Path Alignment critic will do you well. Not over-weighting the path align critic will allow the robot to  deviate from the path to get around dynamic obstacles in the scene or other obstacles not previous considered during path planning. It is subjective as to the best behavior for your application, but it has been shown that MPPI can be an exact path tracker and/or avoid dynamic obstacles very fluidly and everywhere in between. The defaults provided are in the generally right regime for a balanced initial trade-off. 
+
+## 设计模式
+
+Nav2 MPPI Controller 采用以下设计模式：
+
+1. **模型预测控制模式**：使用前瞻性控制方法预测未来轨迹
+2. **插件模式**：使用可插拔的评价函数（critics）影响轨迹选择
+3. **策略模式**：支持不同的机器人运动模型
+4. **组合模式**：多个评价函数共同影响最终轨迹选择
+5. **生命周期模式**：遵循 ROS2 生命周期管理
+
+## 代码框架
+
+### 核心组件
+
+1. **MPPIController 类**：
+   - 实现 nav2_core::Controller 接口
+   - 管理优化器和路径处理
+   - 提供与导航栈的接口
+
+2. **Optimizer 类**：
+   - MPPI 算法的核心实现
+   - 生成并评估候选轨迹
+   - 使用随机采样和评价函数选择最优控制
+
+3. **CriticManager 类**：
+   - 管理评价函数插件
+   - 计算轨迹成本
+   - 组合多个评价函数的结果
+
+4. **MotionModel 类**：
+   - 抽象运动模型接口
+   - 提供差分驱动、全向和阿克曼转向模型
+
+### 评价函数系统
+
+MPPI 控制器使用多个评价函数（critics）来评估轨迹质量：
+
+1. **ConstraintCritic**：强制控制约束
+2. **ObstaclesCritic**：避开障碍物
+3. **CostCritic**：考虑代价地图成本
+4. **GoalCritic**：引导机器人到达目标
+5. **GoalAngleCritic**：调整目标角度对齐
+6. **PathAlignCritic**：保持路径对齐
+7. **PathFollowCritic**：跟随路径
+8. **PathAngleCritic**：调整路径角度对齐
+9. **PreferForwardCritic**：偏好前进运动
+10. **TwirlingCritic**：减少旋转抖动
+11. **VelocityDeadbandCritic**：处理速度死区
+
+## 实现原理
+
+### 1. MPPI 算法流程
+
+MPPI 算法通过以下步骤实现预测控制：
+
+```cpp
+void Optimizer::optimize()
+{
+  // 1. 生成带噪声的轨迹
+  generateNoisedTrajectories();
+  
+  // 2. 通过运动模型积分状态得到完整轨迹
+  integrateStateVelocities(generated_trajectories_, state_);
+  
+  // 3. 使用评价函数评估轨迹
+  critic_manager_.evalTrajectoriesScores(critics_data_, costs_);
+  
+  // 4. 基于成本计算控制序列
+  updateControlSequence();
+  
+  // 5. 应用控制约束
+  applyControlSequenceConstraints();
+  
+  // 6. 为下一个周期准备控制序列
+  shiftControlSequence();
+}
+```
+
+### 2. 轨迹生成与评估
+
+MPPI 生成多个带噪声的轨迹并评估它们：
+
+```cpp
+void Optimizer::generateNoisedTrajectories()
+{
+  // 生成随机噪声
+  auto & noises = noise_generator_.generateNoises();
+  
+  // 获取控制序列
+  auto & control_sequence = control_sequence_.vels;
+  
+  // 为每个批次和时间步应用噪声
+  for (size_t batch = 0; batch < settings_.batch_size; batch++) {
+    for (size_t time = 0; time < settings_.time_steps; time++) {
+      // 添加噪声到控制
+      state_.vx(batch, time) = control_sequence(0, time) + noises(batch, time, 0);
+      state_.vy(batch, time) = control_sequence(1, time) + noises(batch, time, 1);
+      state_.wz(batch, time) = control_sequence(2, time) + noises(batch, time, 2);
+    }
+  }
+}
+```
+
+### 3. 控制序列更新
+
+基于评估结果更新控制序列：
+
+```cpp
+void Optimizer::updateControlSequence()
+{
+  // 计算指数成本
+  xt::xtensor<float, 1> exponentiated_costs = xt::exp(-1.0f / settings_.temperature * costs_);
+  
+  // 计算权重总和
+  float denominator = xt::sum(exponentiated_costs)();
+  
+  // 防止除零
+  if (denominator < 1e-6) {
+    denominator = 1e-6;
+  }
+  
+  // 计算轨迹权重
+  xt::xtensor<float, 1> trajectory_weights = exponentiated_costs / denominator;
+  
+  // 更新控制序列 - 加权和所有轨迹的控制
+  for (size_t time = 0; time < settings_.time_steps; time++) {
+    for (size_t batch = 0; batch < settings_.batch_size; batch++) {
+      control_sequence_.vels(0, time) += trajectory_weights(batch) * state_.vx(batch, time);
+      control_sequence_.vels(1, time) += trajectory_weights(batch) * state_.vy(batch, time);
+      control_sequence_.vels(2, time) += trajectory_weights(batch) * state_.wz(batch, time);
+    }
+  }
+}
+```
+
+### 4. 运动模型集成
+
+使用运动模型将速度控制积分为位姿轨迹：
+
+```cpp
+void Optimizer::integrateStateVelocities(
+  models::Trajectories & trajectories, const models::State & state) const
+{
+  // 从初始位姿开始
+  auto initial_pose = state_.pose;
+  
+  // 使用运动模型积分每个批次的轨迹
+  for (size_t batch = 0; batch < settings_.batch_size; batch++) {
+    trajectories.pose(batch, 0) = initial_pose;
+    
+    for (size_t time = 1; time < settings_.time_steps; time++) {
+      // 使用运动模型计算下一个位姿
+      motion_model_->applyMotion(
+        trajectories.pose(batch, time - 1),
+        state.vx(batch, time - 1),
+        state.vy(batch, time - 1),
+        state.wz(batch, time - 1),
+        settings_.model_dt,
+        trajectories.pose(batch, time));
+    }
+  }
+}
+```
+
+## 关键参数
+
+以下是 MPPI 控制器的关键参数：
+
+1. **核心算法参数**：
+   - `batch_size`：轨迹批量大小（通常 1000-2000）
+   - `time_steps`：每个轨迹的时间步数
+   - `model_dt`：时间步长
+   - `temperature`：轨迹选择性参数（越小越选择性）
+   - `gamma`：平滑度和能量之间的权衡
+
+2. **速度限制参数**：
+   - `vx_max/vx_min`：最大和最小线速度
+   - `vy_max`：最大侧向速度（全向机器人）
+   - `wz_max`：最大角速度
+
+3. **噪声参数**：
+   - `vx_std/vy_std/wz_std`：速度采样标准差
+
+## 使用案例
+
+### 1. 差分驱动机器人
+
+```yaml
+FollowPath:
+  plugin: "nav2_mppi_controller::MPPIController"
+  motion_model: "DiffDrive"
+  critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic"]
+  vx_max: 0.5
+  vx_min: -0.35
+  vy_max: 0.0  # 差分驱动不支持侧向运动
+  wz_max: 1.5
+  iteration_count: 1
+  batch_size: 1500
+  time_steps: 50
+  model_dt: 0.05
+```
+
+### 2. 全向机器人
+
+```yaml
+FollowPath:
+  plugin: "nav2_mppi_controller::MPPIController"
+  motion_model: "Omni"
+  critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic"]
+  vx_max: 0.5
+  vx_min: -0.35
+  vy_max: 0.5  # 支持侧向运动
+  wz_max: 1.5
+  iteration_count: 1
+  batch_size: 1500
+  time_steps: 50
+  model_dt: 0.05
+```
+
+### 3. 阿克曼转向机器人
+
+```yaml
+FollowPath:
+  plugin: "nav2_mppi_controller::MPPIController"
+  motion_model: "Ackermann"
+  critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic"]
+  vx_max: 0.9
+  vx_min: -0.2
+  vy_max: 0.0  # 阿克曼不支持侧向运动
+  wz_max: 1.0
+  AckermannConstraints:
+    min_turning_r: 0.2  # 最小转弯半径
+  iteration_count: 1
+  batch_size: 1500
+  time_steps: 50
+  model_dt: 0.05
+```
+
+### 4. 高动态环境避障
+
+```yaml
+FollowPath:
+  plugin: "nav2_mppi_controller::MPPIController"
+  critics: ["ConstraintCritic", "ObstaclesCritic", "GoalCritic", "PathAlignCritic", "PathFollowCritic"]
+  ObstaclesCritic:
+    enabled: true
+    cost_power: 1
+    repulsion_weight: 1.5
+    critical_weight: 20.0
+    consider_footprint: true
+    collision_cost: 10000.0
+    collision_margin_distance: 0.1
+    near_goal_distance: 0.5
+```
+
+通过这些组件和配置，Nav2 MPPI Controller 提供了一个强大且灵活的控制器，适用于多种机器人平台和导航场景，特别适合复杂和动态环境中的导航任务。

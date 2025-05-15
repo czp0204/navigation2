@@ -1,5 +1,140 @@
 # Smac Planner
 
+## 设计模式
+
+Nav2 Smac Planner 采用以下设计模式：
+
+1. **策略模式**：通过不同的规划算法插件（混合 A*、状态栅格、2D A*）提供不同的导航策略
+2. **模板方法模式**：使用模板化的 A* 搜索算法，允许不同类型的节点实现
+3. **工厂模式**：动态创建不同类型的节点和运动模型
+4. **组合模式**：将路径规划、平滑和碰撞检测组合成完整的规划系统
+
+## 代码框架
+
+### 1. 核心组件
+
+#### 通用搜索框架
+- **A_Star 类**：模板化的 A* 搜索算法实现
+- **NodeBase 类**：所有节点类型的基类
+- **Node2D, NodeHybrid, NodeLattice 类**：针对不同规划策略的节点实现
+
+#### 规划器插件
+- **SmacPlanner2D**：基于 2D A* 的网格规划器
+- **SmacPlannerHybrid**：基于混合 A* 的非完整性约束规划器
+- **SmacPlannerLattice**：基于状态栅格的规划器
+
+#### 辅助工具
+- **CostmapDownsampler**：代价地图降采样工具
+- **CollisionChecker**：碰撞检测实现
+- **Smoother**：路径平滑器
+- **AnalyticExpansion**：用于目标接近的解析扩展
+
+### 2. 主要类结构关系
+
+```
+A_Star<NodeT> ─── 使用 ──> NodeT (Node2D/NodeHybrid/NodeLattice)
+       │
+       └── 使用 ──> NodeBase
+                    /    \
+                   /      \
+             Node2D      NodeHybrid/NodeLattice
+                                │
+                                └── 使用 ──> MotionModel
+                                               /     \
+                                              /       \
+                                    DubinModel    ReedsSheppModel
+```
+
+## 实现原理
+
+### 1. 搜索算法
+
+所有规划器都基于高度优化的 A* 搜索算法实现：
+
+```cpp
+template<typename NodeT>
+bool A_Star<NodeT>::createPath(
+  const unsigned int & start_index,
+  const unsigned int & goal_index,
+  nav_msgs::msg::Path & path)
+{
+  // 初始化 A* 搜索
+  // 循环直到找到路径或达到最大迭代次数
+  while (!_queue.empty() && !_found_goal && num_iterations < max_iterations) {
+    // 获取优先队列中的最佳节点
+    NodePtr current = _queue.top().second;
+    _queue.pop();
+    
+    // 如果是目标，标记为找到
+    if (current->getIndex() == goal_index) {
+      _found_goal = true;
+      break;
+    }
+    
+    // 对当前节点进行扩展
+    current->expansion(_costmap, _collision_checker, _queue, 
+                       _goal_coordinates, _start_coordinates);
+    num_iterations++;
+  }
+  
+  // 回溯生成路径
+  return backtracePath(goal_index, path);
+}
+```
+
+### 2. 不同规划器的特点
+
+#### SmacPlanner2D
+- 使用 8 连通网格搜索
+- 适用于圆形轮廓的差分/全向机器人
+- 最简单但计算效率高
+
+#### SmacPlannerHybrid
+- 使用 Dubin 或 Reeds-Shepp 运动模型
+- 支持非完整性约束（如阿克曼转向）
+- 考虑机器人朝向和最小转弯半径
+
+#### SmacPlannerLattice
+- 使用预定义的运动基元集
+- 支持多种机器人模型
+- 可以更精确地控制机器人运动轨迹
+
+### 3. 性能优化
+
+1. **多分辨率搜索**：
+   ```cpp
+   void CostmapDownsampler::downsampleCostmap(
+     nav2_costmap_2d::Costmap2D * costmap,
+     const unsigned int & downsampling_factor)
+   {
+     // 降低代价地图分辨率以加速搜索
+   }
+   ```
+
+2. **启发式函数优化**：
+   ```cpp
+   float NodeHybrid::getHeuristicCost()
+   {
+     // 使用组合启发式函数
+     return _motion_model.hypot_dist(_pose.x, _pose.y, _goal_x, _goal_y) * 
+            _cost_penalty + _obstacle_heuristic_factor;
+   }
+   ```
+
+3. **解析扩展**：当接近目标时使用解析解而非搜索
+   ```cpp
+   bool AnalyticExpansion::tryAnalyticExpansion(
+     const NodePtr & current_node,
+     const NodePtr & goal_node,
+     const nav2_costmap_2d::Costmap2D * costmap)
+   {
+     // 计算解析路径
+     // 如果可行，直接连接到目标
+   }
+   ```
+
+## 主要特性
+
 The SmacPlanner is a plugin for the Nav2 Planner server. It includes currently 3 distinct plugins:
 - `SmacPlannerHybrid`: a highly optimized fully reconfigurable Hybrid-A* implementation supporting Dubin and Reeds-Shepp models (legged, ackermann and car models).
  - `SmacPlannerLattice`: a highly optimized fully reconfigurable State Lattice implementation supporting configurable minimum control sets, with provided control sets for Ackermann, Legged, Differential and Omnidirectional models.
